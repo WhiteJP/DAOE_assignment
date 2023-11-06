@@ -3,21 +3,32 @@ title: "DAOE Assignment"
 subtitle: "MIT Sloan School of Management"
 date: '15 November 2023'
 author: "Joshua White"
-format: pdf
+format:
+  pdf:
+    toc: true
+    df-print: kable
+    fig-align: center
+    fig-width: 6.5
+    fig-height: 3
+    fontsize: 10pt
+    monofontoptions: 
+    - Scale=0.75
 ---
 
 ## Set up 
 
-### Load packages
+#### Load packages
 
-```{r}
+```{r, warning = FALSE}
 library(tidyverse)
 library(DeclareDesign)
 library(quickblock)
 library(scclust)
 ```
 
-### Load data
+#### Load data
+
+Note, `educ_cat` loaded as ordered factor and `ideo` loaded as numeric to work better with `quickblock`. 
 
 ```{r}
 data <- readr::read_csv(
@@ -37,29 +48,34 @@ data <- readr::read_csv(
 #data$educ_cat <- as.numeric(data$educ_cat)
 ```
 
-### Define functions
+#### Define functions
 
 ```{r}
 draw_data <- function(N) {
-  Y_Z_0 <- Y_Z_1 <- data$y # under null hypothesis
-  block <- quickblock(as.data.frame(data[, c("party", "ideo", "age", "educ_cat")]), 8) %>%  unclass()
-  rows <- sample.int(nrow(data), N)
-  cbind(data[rows, ], block, Y_Z_1, Y_Z_0)
+  draw <- as.data.frame(data[sample.int(nrow(data), N), ])
+  Y_Z_1 <- Y_Z_0 <- draw$y # under sharp null - Should I add some noise here? 
+  block <- unclass(quickblock(draw[, c("party", "ideo", "age", "educ_cat")], 8))
+  cbind(draw, block, Y_Z_1, Y_Z_0)
 }
 
 ```
 
-### Set parameters
+#### Set parameters for analysis
 
 ```{r}
 N <- 1000
 trt <- 1/4
+nsims <- 500
+nboot <- 100
+estimator_labs <-  c(
+  "Difference in means", "Party-adjusted", "Party-adjusted, Lin (2013)",
+  "Party-adjusted, as factor", "Covariate-adjusted"
+)
 ```
 
+## Question 1 
 
-## Simulations
-
-### Setup model, inquiry and estimators with `declareDesign`
+Setup model, inquiry, estimators and diagnosands with `declareDesign`
 
 ```{r}
 base_design <- 
@@ -71,74 +87,92 @@ base_design <-
     SATE = mean(Y_Z_1 - Y_Z_0)
   )
 
-estimators <- declare_estimator(y ~ Z, label = "diff in means" ) +
-  declare_estimator(y ~ Z + party, label = "party reg") +
-  declare_estimator(y ~ Z, covariates = ~ party, 
-                    .method = estimatr::lm_lin, label = "party reg - Lin") +
-  declare_estimator(y ~ Z + factor(party), label = "party reg - factors") +
-  declare_estimator(y ~ Z + factor(block), label = "block reg")
+estimators <- declare_estimator(y ~ Z, label = estimator_labs[1]) +
+  declare_estimator(y ~ Z + party, label = estimator_labs[2]) +
+  declare_estimator(
+    y ~ Z, covariates = ~ party,.method = estimatr::lm_lin, label = estimator_labs[3]
+  ) +
+  declare_estimator(y ~ Z + factor(party), label = estimator_labs[4]) +
+  declare_estimator(y ~ Z + factor(block), label = estimator_labs[5])
 
+diagnosands <- declare_diagnosands(
+    Bias            = mean(estimate - estimand),
+    SD              = sd(estimate), #or sqrt(pop.var(estimate))?
+    `Mean CI width` = mean(conf.high - conf.low),
+    `CI coverage`   = mean(estimand <= conf.high & estimand >= conf.low)
+  )
 
 ```
 
 ### Simulations with Bernouilli assignment
 
-## Bernoulli
-
-```{r}
-design_bernoulli <- base_design + 
+```{r, warning=FALSE}
+bernoulli <- base_design + 
   declare_assignment(
     Z = simple_ra(N = N, prob = trt)
   ) +
   estimators
 
 
-bernoulli_diagnostics <- diagnose_design(design_bernoulli, sims = 30, bootstrap_sims = 10)
+bernoulli_diagnostics <- diagnose_design(
+  bernoulli,
+  sims = nsims, 
+  bootstrap_sims = nboot, 
+  diagnosands = diagnosands
+)
+
 bernoulli_diagnostics
 
 ```
 
 
-## Stratified random sampling blocked on party
+### Stratified random sampling blocked on party
 
-```{r}
-design_party <- base_design + 
+```{r, warning = FALSE}
+party_stratified <- base_design + 
   declare_assignment(
     Z = block_ra(blocks = party, prob = trt)
   ) +
   estimators
 
-
-party_diagnostics <- diagnose_design(design_party, sims = 30, bootstrap_sims = 30)
+party_diagnostics <- diagnose_design(
+  party_stratified, 
+  sims = nsims, 
+  bootstrap_sims = nboot, 
+  diagnosands = diagnosands
+)
 party_diagnostics
 
 ```
 
-## Stratified random sampling blocked on 
+### Stratified random sampling blocked on `party`,`ideo`,  `age`, and `educ_cat`
 
-```{r}
-design_block <- base_design + 
+```{r, warning = FALSE}
+multiple_covariate_stratified <- base_design + 
   declare_assignment(
     Z = block_ra(blocks = block, prob = trt)
   ) +
   estimators
 
-block_diagnostics <- diagnose_design(design_block, sims = 30, bootstrap_sims = 30)
-block_diagnostics
+multiple_covariates_diagnostics <- diagnose_design(
+  multiple_covariate_stratified,
+  sims = nsims, 
+  bootstrap_sims = nboot, 
+  diagnosands = diagnosands
+)
+
+multiple_covariates_diagnostics
 
 ```
 ## Plot to compare
 
-```{r}
-compare_diagnoses(design_bernoulli, design_party)
-
+```{r, fig.width = 7}
 comparison_data <-
   bind_rows(bernoulli_diagnostics$diagnosands_df, 
             party_diagnostics$diagnosands_df, 
-            block_diagnostics$diagnosands_df) %>% 
-  rename(SD = "sd_estimate", `se(SD)` = "se(sd_estimate)") %>% 
+            multiple_covariates_diagnostics$diagnosands_df) %>% 
   pivot_longer(
-    cols = c(mean_estimate, bias, SD, rmse, power, coverage),
+    cols = c(Bias, SD, `Mean CI width`, `CI coverage`),
     names_to = "diagnosand",
     values_to = "value"
   ) %>% 
@@ -149,19 +183,133 @@ comparison_data <-
     names_pattern = "se\\((.*)\\)",
   ) %>% 
   filter(diagnosand == se_diagnosand) %>% 
-  filter(!diagnosand %in% c("mean_estimate", "rmse", "power")) %>% 
   select(-se_diagnosand)
 
 comparison_data[comparison_data$diagnosand == "coverage", "se"] <- NA
 
-#ADD in confidence interval width
+plot_data <- comparison_data %>% 
+  mutate(
+    estimator = factor(estimator, estimator_labs),
+    diagnosand = factor(diagnosand, c("Bias", "SD", "Mean CI width", "CI coverage"))
+  )
 
-comparison_data %>% 
-  ggplot(aes(y = value, x = design)) +
-  geom_point() +
-  geom_errorbar(aes(ymin = value - se, ymax = value + se), width = .4) +
-  ggh4x::facet_grid2(estimator~diagnosand, scales = "free_y", independent = "y") +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1))
 
+plot_data %>% 
+  ggplot(aes(y = value, x = design, col = estimator)) +
+  geom_point(position = position_dodge(width = 0.4)) +
+  geom_errorbar(
+    aes(ymin = value - se, ymax = value + se), width = .4,
+    position = position_dodge(width = 0.4)
+  ) +
+  facet_wrap(~diagnosand, ncol = 4, scales = "free") +
+  #facet_grid(diagnosand~estimator, scales = "free") +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "bottom"
+  )
+
+
+
+```
+
+## Question 1b
+
+There appears to be some benefits to blocking on relevant variables, if in analysis we also account for the same variables. ... 
+
+To try to see how these analyses may have a practical effect on our analyses we will run simulations to see how power changes for various different SATEs $\in$ {0.02, 0.1, 0.2, 0.5, 1}, noting that the outcome variable is [1, 7] and its standard deviation in the finite population (of 4000 given in this assignment) is `r sd(data$y)``
+
+```{r}
+draw_data_with_effect <- function(N) {
+  draw <- as.data.frame(data[sample.int(nrow(data), N), ])
+  Y_Z_0 <- draw$y 
+  Y_Z_1 <- jpw::censor_right(Y_Z_0 + 3, 7) # treatment increases y by 1 up to max
+  block <- unclass(quickblock(draw[, c("party", "ideo", "age", "educ_cat")], 8))
+  cbind(draw, block, Y_Z_1, Y_Z_0)
+}
+
+base_design <- 
+  declare_model(
+    N = N,
+    handler = draw_data_with_effect
+  ) +
+  declare_inquiry(
+    SATE = mean(Y_Z_1) - mean(Y_Z_0)
+  )
+
+estimators <- declare_estimator(y ~ Z, label = estimator_labs[1]) +
+  declare_estimator(y ~ Z + party, label = estimator_labs[2]) +
+  declare_estimator(
+    y ~ Z, covariates = ~ party,.method = estimatr::lm_lin, label = estimator_labs[3]
+  ) +
+  declare_estimator(y ~ Z + factor(party), label = estimator_labs[4]) +
+  declare_estimator(y ~ Z + factor(block), label = estimator_labs[5])
+
+#diagnosands <- declare_diagnosands(
+#  power = mean(p.value <= .05) # need to figure out why alpha isn't working
+#)
+
+bernoulli <- base_design + 
+    declare_assignment(
+      Z = simple_ra(N = N, prob = trt)
+    ) +
+    estimators
+  
+  
+bernoulli_diagnostics <- diagnose_design(
+  bernoulli,
+  sims = nsims, 
+  bootstrap_sims = nboot#, 
+  #diagnosands = diagnosands
+)
+
+bernoulli_diagnostics
+bernoulli_diagnostics$simulations_df
+
+
+x <- draw_data_with_effect(1000)
+
+mean(x$Y_Z_0) 
+```
+
+Sims for benouilli
+
+```{r}
+power_sims <- function(effects) {
+  
+  results <- list()
+  
+  for (i in seq_along(effects)) {
+    base_design <- 
+      declare_model(
+        N = N,
+        effect = effects[i],
+        handler = draw_data_with_effect
+      ) +
+      declare_inquiry(
+        SATE = mean(Y_Z_1 - Y_Z_0)
+      )
+    
+    bernoulli <- base_design + 
+      declare_assignment(
+        Z = simple_ra(N = N, prob = trt)
+      ) +
+      estimators
+    
+    bernoulli_diagnostics <- diagnose_design(
+      bernoulli,
+      sims = 100, 
+      bootstrap_sims = 50, 
+      diagnosands = declare_diagnosands(power = mean(p.value <= 0.05)) # why alpha no work?
+    )
+    results[[i]] <- bernoulli_diagnostics
+  }
+  
+  results
+  
+}
+
+power_sims_results <- power_sims(c(.2, 1))
+
+power_sims_results[[2]]$simulations_df
 
 ```
