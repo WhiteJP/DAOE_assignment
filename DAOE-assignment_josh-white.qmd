@@ -3,14 +3,21 @@ title: "DAOE Assignment"
 subtitle: "MIT Sloan School of Management"
 date: '15 November 2023'
 author: "Joshua White"
+execute:
+  cache: true
+knitr:
+  opts_chunk: 
+    warning: false
+    message: false
 format:
   pdf:
     toc: true
     df-print: kable
     fig-align: center
-    fig-width: 6.5
-    fig-height: 3
-    fontsize: 10pt
+    fig-width: 7
+    fig-height: 5.5
+    fontsize: 9pt
+    monofont: 'Source Code Pro'
     monofontoptions: 
     - Scale=0.75
 ---
@@ -19,82 +26,103 @@ format:
 
 #### Load packages
 
-```{r, warning = FALSE}
-library(tidyverse)
-library(DeclareDesign)
-library(quickblock)
-library(scclust)
+```{r}
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(DeclareDesign)
+  library(quickblock)
+})
+
+ggplot2::theme_set(
+  ggplot2::theme_bw() +
+  theme(
+    plot.title = element_text(size=14),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.title = element_text(size=8),
+    legend.text = element_text(size=6),
+    legend.position = "bottom"
+  ) 
+)
 ```
 
 #### Load data
 
-Note, `educ_cat` loaded as ordered factor and `ideo` loaded as numeric to work better with `quickblock`. 
+Note, `educ_cat` loaded as ordered factor and `ideo` loaded as integer to work better with `quickblock`. 
 
 ```{r}
 data <- readr::read_csv(
   "mt_baseline_data.csv",
   col_types = cols(
-    educ_cat = col_factor(),
-    #educ_cat = col_factor(
-    #  levels = c("High school or less", "Some college", "College degree", "Post-graduate degree"),
-    #  ordered = TRUE
-    #),
-    ideo = col_factor(), #col_number(),
+    educ_cat = col_factor(
+      levels = c("High school or less", "Some college", "College degree", "Post-graduate degree"),
+      ordered = TRUE
+    ),
+    ideo = col_integer(),
     income_cat = col_factor(),
     race = col_factor()
   )
 )
-
-#data$educ_cat <- as.numeric(data$educ_cat)
 ```
 
 #### Define functions
 
 ```{r}
+# Draw data function for use with DeclareDesign
 draw_data <- function(N) {
   draw <- as.data.frame(data[sample.int(nrow(data), N), ])
-  Y_Z_1 <- Y_Z_0 <- draw$y # under sharp null - Should I add some noise here? 
+  Y_Z_1 <- Y_Z_0 <- Y <- draw$y # SHARP NULL -- No effect.
   block <- unclass(quickblock(draw[, c("party", "ideo", "age", "educ_cat")], 8))
-  cbind(draw, block, Y_Z_1, Y_Z_0)
+  cbind(draw, block, Y_Z_1, Y_Z_0, Y)
 }
 
+# function to print tidy diagnosis data frame for nice viewing
+print_diagnostics <- function(tidy_diagnostics) {
+  tidy_diagnostics %>% 
+    mutate(
+      Estimator = factor(estimator, levels = estimator_labs),
+      estimate = paste(round(estimate, 3), jpw::brackets(round(std.error, 3))),
+      .keep = "unused"
+    ) %>% 
+    select(Estimator, diagnosand, estimate) %>% 
+    pivot_wider(
+      names_from = diagnosand,
+      values_from = estimate
+    ) %>% 
+    arrange(Estimator)
+}
 ```
 
-#### Set parameters for analysis
+#### Set global parameters for analysis
 
 ```{r}
 N <- 1000
 trt <- 1/4
-nsims <- 500
-nboot <- 100
+nsims <- 2000
+nboot <- 1000
 estimator_labs <-  c(
   "Difference in means", "Party-adjusted", "Party-adjusted, Lin (2013)",
   "Party-adjusted, as factor", "Covariate-adjusted"
 )
+design_labs <- c("Bernouilli", "Party blocked", "Covariate blocked")
 ```
 
-## Question 1 
+\newpage
 
-Setup model, inquiry, estimators and diagnosands with `declareDesign`
+## Question 1a 
+
+Setup model, inquiry, estimators, measurement and diagnosands with `DeclareDesign`
 
 ```{r}
-base_design <- 
-  declare_model(
-    N = N,
-    handler = draw_data
-  ) +
-  declare_inquiry(
-    SATE = mean(Y_Z_1 - Y_Z_0)
-  )
+base_design <- declare_model(N = N, handler = draw_data) +
+  declare_inquiry(SATE = mean(Y_Z_1 - Y_Z_0))
 
-estimators <- declare_estimator(y ~ Z, label = estimator_labs[1]) +
-  declare_estimator(y ~ Z + party, label = estimator_labs[2]) +
-  declare_estimator(
-    y ~ Z, covariates = ~ party,.method = estimatr::lm_lin, label = estimator_labs[3]
-  ) +
-  declare_estimator(y ~ Z + factor(party), label = estimator_labs[4]) +
-  declare_estimator(y ~ Z + factor(block), label = estimator_labs[5])
+estimators <- declare_estimator(Y ~ Z, label = estimator_labs[1]) +
+  declare_estimator(Y ~ Z + party, label = estimator_labs[2]) +
+  declare_estimator(Y ~ Z, covariates = ~party, .method = estimatr::lm_lin, label = estimator_labs[3]) +
+  declare_estimator(Y ~ Z + factor(party), label = estimator_labs[4]) +
+  declare_estimator(Y ~ Z + factor(block), label = estimator_labs[5])
 
+measurement <- declare_measurement(Y = reveal_outcomes(Y ~ Z)) 
 diagnosands <- declare_diagnosands(
     Bias            = mean(estimate - estimand),
     SD              = sd(estimate), #or sqrt(pop.var(estimate))?
@@ -102,17 +130,23 @@ diagnosands <- declare_diagnosands(
     `CI coverage`   = mean(estimand <= conf.high & estimand >= conf.low)
   )
 
+## Assignment mechanisms
+bernoulli_assignment <- declare_assignment(Z = simple_ra(N = N, prob = trt))
+party_blocked_assignment <- declare_assignment(Z = block_ra(blocks = party, prob = trt))
+covariate_blocked_assignment <- declare_assignment(Z = block_ra(blocks = block, prob = trt))
 ```
+
+\newpage
 
 ### Simulations with Bernouilli assignment
 
-```{r, warning=FALSE}
+```{r}
+#| tbl-cap: "Simulations results for null effect with Bernouilli assignment"
+#| tbl-subcap: "Values in brackets are standard errors obtained by bootstrap."
 bernoulli <- base_design + 
-  declare_assignment(
-    Z = simple_ra(N = N, prob = trt)
-  ) +
-  estimators
-
+  bernoulli_assignment + 
+  measurement +
+  estimators 
 
 bernoulli_diagnostics <- diagnose_design(
   bernoulli,
@@ -121,19 +155,22 @@ bernoulli_diagnostics <- diagnose_design(
   diagnosands = diagnosands
 )
 
-bernoulli_diagnostics
-
+bernoulli_diagnostics_tidy <- tidy(bernoulli_diagnostics)
+print_diagnostics(bernoulli_diagnostics_tidy)
 ```
 
 
-### Stratified random sampling blocked on party
+\newpage
+
+### Simluations with stratified random sampling blocked on party
 
 ```{r, warning = FALSE}
+#| tbl-cap: "Simulations results for null effect with stratified complete assignment blocked by party"
+#| tbl-subcap: "Values in brackets are standard errors obtained by bootstrap." 
 party_stratified <- base_design + 
-  declare_assignment(
-    Z = block_ra(blocks = party, prob = trt)
-  ) +
-  estimators
+  party_blocked_assignment +
+  estimators +
+  measurement
 
 party_diagnostics <- diagnose_design(
   party_stratified, 
@@ -141,18 +178,22 @@ party_diagnostics <- diagnose_design(
   bootstrap_sims = nboot, 
   diagnosands = diagnosands
 )
-party_diagnostics
 
+party_diagnostics_tidy <- tidy(party_diagnostics)
+print_diagnostics(party_diagnostics_tidy)
 ```
 
-### Stratified random sampling blocked on `party`,`ideo`,  `age`, and `educ_cat`
+\newpage
+
+### Stratified random sampling blocked on `party`, `ideo`,  `age`, and `educ_cat`
 
 ```{r, warning = FALSE}
+#| tbl-cap: "Simulations results for null effect with stratified complete assignment blocked by party, ideology, age and education"
+#| tbl-subcap: "Values in brackets are standard errors obtained by bootstrap." 
 multiple_covariate_stratified <- base_design + 
-  declare_assignment(
-    Z = block_ra(blocks = block, prob = trt)
-  ) +
-  estimators
+  covariate_blocked_assignment +
+  estimators +
+  measurement
 
 multiple_covariates_diagnostics <- diagnose_design(
   multiple_covariate_stratified,
@@ -161,155 +202,376 @@ multiple_covariates_diagnostics <- diagnose_design(
   diagnosands = diagnosands
 )
 
-multiple_covariates_diagnostics
-
+multiple_covariates_diagnostics_tidy <- tidy(multiple_covariates_diagnostics)
+print_diagnostics(multiple_covariates_diagnostics_tidy)
 ```
-## Plot to compare
 
-```{r, fig.width = 7}
-comparison_data <-
-  bind_rows(bernoulli_diagnostics$diagnosands_df, 
-            party_diagnostics$diagnosands_df, 
-            multiple_covariates_diagnostics$diagnosands_df) %>% 
-  pivot_longer(
-    cols = c(Bias, SD, `Mean CI width`, `CI coverage`),
-    names_to = "diagnosand",
-    values_to = "value"
+### Plot
+
+```{r, fig.width = 7, fig.height= 7}
+comparison_data <- 
+  bind_rows(
+    bernoulli_diagnostics_tidy,
+    party_diagnostics_tidy,
+    multiple_covariates_diagnostics_tidy
   ) %>% 
-  pivot_longer(
-    cols = contains("se"),
-    names_to = "se_diagnosand",
-    values_to = "se",
-    names_pattern = "se\\((.*)\\)",
-  ) %>% 
-  filter(diagnosand == se_diagnosand) %>% 
-  select(-se_diagnosand)
-
-comparison_data[comparison_data$diagnosand == "coverage", "se"] <- NA
-
-plot_data <- comparison_data %>% 
+  #order observations
   mutate(
     estimator = factor(estimator, estimator_labs),
     diagnosand = factor(diagnosand, c("Bias", "SD", "Mean CI width", "CI coverage"))
   )
 
-
-plot_data %>% 
-  ggplot(aes(y = value, x = design, col = estimator)) +
-  geom_point(position = position_dodge(width = 0.4)) +
+comparison_data %>% 
+  ggplot(aes(y = estimate, x = design, col = estimator)) +
+  geom_point(position = position_dodge(width = 0.5)) +
   geom_errorbar(
-    aes(ymin = value - se, ymax = value + se), width = .4,
+    aes(ymin = estimate - std.error, ymax =  estimate + std.error), width = .4,
     position = position_dodge(width = 0.4)
   ) +
   facet_wrap(~diagnosand, ncol = 4, scales = "free") +
-  #facet_grid(diagnosand~estimator, scales = "free") +
-  theme(
-    axis.text.x = element_text(angle = 45, hjust = 1),
-    legend.position = "bottom"
+  ggsci::scale_color_d3() +
+  labs(
+    x = "Assignment mechanism",
+    y = "",
+    title = "Comparing diagnosands for different estimators and assignment mechanisms",
+    caption = "Error bars represent standard errors obtained via bootstrap."
   )
-
-
-
 ```
 
-## Question 1b
+### Discussion
 
 There appears to be some benefits to blocking on relevant variables, if in analysis we also account for the same variables. ... 
 
-To try to see how these analyses may have a practical effect on our analyses we will run simulations to see how power changes for various different SATEs $\in$ {0.02, 0.1, 0.2, 0.5, 1}, noting that the outcome variable is [1, 7] and its standard deviation in the finite population (of 4000 given in this assignment) is `r sd(data$y)``
+## Question 1b
 
-```{r}
-draw_data_with_effect <- function(N) {
-  draw <- as.data.frame(data[sample.int(nrow(data), N), ])
-  Y_Z_0 <- draw$y 
-  Y_Z_1 <- jpw::censor_right(Y_Z_0 + 3, 7) # treatment increases y by 1 up to max
-  block <- unclass(quickblock(draw[, c("party", "ideo", "age", "educ_cat")], 8))
-  cbind(draw, block, Y_Z_1, Y_Z_0)
+```{r, include=FALSE}
+ef_probs <- c(.1, .25, .5, .75, 1)
+
+SATEs <- numeric(length(ef_probs))
+for (i in seq_along(ef_probs)) {
+  y1 <- ifelse(data$y != 7, 
+    data$y + 1 * rbinom(4000, 1, prob = ef_probs[i]), 
+    data$y
+  )
+  SATEs[i] <- mean(y1 - data$y)
 }
 
-base_design <- 
-  declare_model(
-    N = N,
-    handler = draw_data_with_effect
-  ) +
-  declare_inquiry(
-    SATE = mean(Y_Z_1) - mean(Y_Z_0)
-  )
+ds <- SATEs/sd(data$y)
+ds_list <- jpw::brackets(paste(round(ds, 2), collapse = ", "), "squiggly")
+SATEs_list <- jpw::brackets(paste(round(SATEs, 2), collapse = ", "), "squiggly")
 
-estimators <- declare_estimator(y ~ Z, label = estimator_labs[1]) +
-  declare_estimator(y ~ Z + party, label = estimator_labs[2]) +
-  declare_estimator(
-    y ~ Z, covariates = ~ party,.method = estimatr::lm_lin, label = estimator_labs[3]
-  ) +
-  declare_estimator(y ~ Z + factor(party), label = estimator_labs[4]) +
-  declare_estimator(y ~ Z + factor(block), label = estimator_labs[5])
-
-#diagnosands <- declare_diagnosands(
-#  power = mean(p.value <= .05) # need to figure out why alpha isn't working
-#)
-
-bernoulli <- base_design + 
-    declare_assignment(
-      Z = simple_ra(N = N, prob = trt)
-    ) +
-    estimators
-  
-  
-bernoulli_diagnostics <- diagnose_design(
-  bernoulli,
-  sims = nsims, 
-  bootstrap_sims = nboot#, 
-  #diagnosands = diagnosands
-)
-
-bernoulli_diagnostics
-bernoulli_diagnostics$simulations_df
-
-
-x <- draw_data_with_effect(1000)
-
-mean(x$Y_Z_0) 
 ```
 
-Sims for benouilli
+To see how the different assignment mechanisms and analysis choices may have a practical effect on the results of the experiment, I will run simulations to see how power changes under different effect sizes for each different assignment mechanism/analysis combination. Because the outcome variable must be an integer in the range [1, 7], we will consider various treatment effects in which participants in treatment have a probability $p \in$ {.1, .25, .5, .75, 1} of increasing the outcome `y` by 1 (if the subject has not already scored the maximum of 7). In our finite sample (the 4000 data points given), these correspond to average treatment effects of approximately `r SATEs_list`, and given `y`s standard deviation of `r sd(data$y)`standardized effect sizes (Cohen's d) of `r ds_list`. This allows
+
+Given the dataset, the maximum possible positive effect size of treatment would be approximately `r mean(7 - data$y)` if all treated subjects took on the maximum value. We will thus consider
+
+### Setup
 
 ```{r}
-power_sims <- function(effects) {
+draw_data_with_effect <- function(N, prob) {
+  draw <- as.data.frame(data[sample.int(nrow(data), N), ])
+  Y_Z_0 <- Y <- draw$y 
+  Y_Z_1 <- ifelse(Y != 7, Y + 1 * rbinom(4000, 1, prob = prob), Y)
+  block <- unclass(quickblock(draw[, c("party", "ideo", "age", "educ_cat")], 8))
+  cbind(draw, block, Y_Z_1, Y_Z_0, Y)
+}
+
+#' Function to simulate power given effect size and assignment mechanism
+#' 
+#' @param ef_probs numeric vector of effect size probabilities, which define, 
+#'  for each simulation, the probability that treatment increases outcome by 1. 
+#' @param assignments list of `DeclareDesign` assignments to run simulations with. 
+#' 
+power_sims <- function(ef_probs, assignment) {
   
   results <- list()
+  sim_set <- expand_grid(ass = assignment, probs = ef_probs)
   
-  for (i in seq_along(effects)) {
+  for (i in 1:nrow(sim_set)) {
     base_design <- 
       declare_model(
         N = N,
-        effect = effects[i],
+        prob = sim_set$probs[i],
         handler = draw_data_with_effect
       ) +
       declare_inquiry(
         SATE = mean(Y_Z_1 - Y_Z_0)
       )
     
-    bernoulli <- base_design + 
-      declare_assignment(
-        Z = simple_ra(N = N, prob = trt)
-      ) +
-      estimators
+    design <- base_design + 
+      sim_set$ass[[i]] +
+      measurement +
+      estimators 
     
-    bernoulli_diagnostics <- diagnose_design(
-      bernoulli,
-      sims = 100, 
-      bootstrap_sims = 50, 
-      diagnosands = declare_diagnosands(power = mean(p.value <= 0.05)) # why alpha no work?
+    diagnostics <- diagnose_design(
+      design,
+      sims = nsims, 
+      bootstrap_sims = nboot,
+      diagnosands = declare_diagnosands(
+        mean_estimand = mean(estimand),
+        power = mean(p.value <= 0.05))
     )
-    results[[i]] <- bernoulli_diagnostics
+    results[[i]] <- diagnostics
   }
   
   results
-  
 }
 
-power_sims_results <- power_sims(c(.2, 1))
-
-power_sims_results[[2]]$simulations_df
+# Set parameters for simulations
+assignments <- c(
+  bernoulli = bernoulli_assignment,
+  party_blocked = party_blocked_assignment,
+  covariate_blocked = covariate_blocked_assignment
+)
+ef_probs <- c(.1, .25, .5, .75, 1)
 
 ```
+
+### Results
+
+```{r}
+power_sims_results <- power_sims(ef_probs, assignments)
+
+power_data <- tibble(
+  assignment = rep(design_labs, each = length(ef_probs)),
+  SATE = rep(round(SATEs, 2), times = 3),
+  power_sims = power_sims_results %>% map(tidy)
+) %>% 
+  unnest(power_sims) %>% 
+  filter(diagnosand == "power") %>% 
+  mutate(
+    estimator = factor(estimator, estimator_labs),
+    assignment = factor(assignment, design_labs)
+  ) %>% 
+  arrange(assignment, SATE, estimator)
+
+```
+
+#### Plot
+
+```{r}
+power_data %>% 
+  ggplot(
+    aes(x = assignment, y = estimate, col = estimator)
+  ) +
+  geom_point(position = position_dodge(width = 0.5)) +
+  geom_errorbar(
+    aes(ymin = estimate - std.error, ymax = estimate + std.error), 
+    width = .4, position = position_dodge(width = 0.4)
+  ) +
+  facet_wrap(~SATE, ncol = 5) +
+  ggsci::scale_color_d3() +
+  labs(
+    title = "Power for different SATEs, estimators, and assignment mechanisms",
+    caption = "Error bars represent standard errors obtained via bootstrap.",
+    y = "Power",
+    x = "Assignment mechanism"
+  )
+
+
+```
+
+### Table
+
+```{r}
+#| tbl-cap: "Simulations results showing power (with alpha = .05) for different SATEs (columns) assignment mechanisms and estimators"
+#| tbl-subcap: "Values in brackets are standard errors obtained by bootstrap"
+power_data %>% 
+  mutate(
+    estimate = paste(round(estimate, 3), jpw::brackets(round(std.error, 3)))
+  ) %>% 
+  select(assignment, SATE, estimator, estimate) %>% 
+  pivot_wider(
+    names_from = SATE,
+    values_from = estimate
+  ) 
+```
+
+#### Discussion
+
+These results show that ...
+
+## Bonus Question
+
+I will run two pipelines the following setup with each draw from the data: 
+
+- run an OLS multiple linear regression with a main effect for each covariate. Where variables can be coerced to numeric (i.e., ordinal variables such as `educ_cat`, `ideo` and `party`) they will be done so. For `race` and `income_cat` which are truly categorical, I use treatment coding with "White" as the reference for `race` and "<50K" as the default for `income_cat`. If in
+
+- run a separate t-test (for numerical variables, age, party, chi-square test 
+
+Define functions
+
+```{r}
+# Draw data under sharp null, with no need to create blocks here (save compute). 
+draw_data1 <- function(N) {
+  draw <- as.data.frame(data[sample.int(nrow(data), N), ])
+  Y_Z_1 <- Y_Z_0 <- Y <- draw$y # SHARP NULL -- No effect.
+  cbind(draw, Y_Z_1, Y_Z_0, Y)
+}
+
+# Condition on variables with imbalances that found from a t-test or chi-squared.
+cond_on_imbalances <- function(data) {
+  vars <- c("political_knowledge", "ideo", "party", "educ_cat", "income_cat", "age", "race")
+  ps <- numeric(length(vars))
+  
+  # t-test if numeric, chi square if factor
+  for(i in seq_along(vars)) {
+    y <- data[[vars[i]]]
+    if(is.numeric(y)) {
+      ps[i] <- t.test(y[data$Z], y[!data$Z])$p.value
+    } else {
+      ps[i] <- chisq.test(table(y, data$Z))$p.value
+    }
+  }
+
+  # get results after adjustment
+  adjust_for_vars(data, vars[ps <= .1])
+}
+
+# Condition analysis on variables with imbalances found from multiple regression.
+cond_on_imbalances_regression <- function(data) {
+  #run regression to check for imbalances
+  lm_res <- estimatr::lm_robust(
+    Z ~ political_knowledge + ideo + party + as.numeric(educ_cat) + 
+    relevel(income_cat, ref = "<50K") + age + relevel(race, ref = "White"), 
+    data) %>%  broom::tidy()
+  
+  #find sig terms
+  terms <- "political_knowledge|ideo|party|educ_cat|income_cat|age|race"
+  sig_terms <- lm_res$term[lm_res$p.value <= .1 & lm_res$term != "(Intercept)"]
+  terms_to_adjust <- str_extract(sig_terms, terms)
+  
+  # get results after adjustment
+  adjust_for_vars(data, terms_to_adjust)
+}
+
+
+# Helper fun, adjust estimate in OLS based on "imbalances
+adjust_for_vars <- function(data, terms_to_adjust) {
+  adj_form <- if(length(terms_to_adjust)) {
+    paste0("Y ~ Z + ", paste(terms_to_adjust, collapse = " + "))
+  } else {
+    "Y ~ Z"
+  }
+  out <- broom::tidy(lm_robust(formula(adj_form), data))
+  out[out$term == "Z", ] # return estimate and conf intervals of Z
+}
+
+
+imbalances <- declare_model(N = N, handler = draw_data1) +
+  bernoulli_assignment +
+  declare_inquiry(SATE = mean(Y_Z_1 - Y_Z_0)) + 
+  measurement +
+  declare_estimator(
+    handler = label_estimator(cond_on_imbalances), inquiry = "SATE",
+    label = "Imbalance Adjusted"
+  ) + 
+  declare_estimator(
+    handler = label_estimator(cond_on_imbalances_regression), inquiry = "SATE",
+    label = "Imbalance Adjusted - Regression"
+  ) +
+  declare_estimator(Y ~ Z, label = "Difference in means", inquiry = "SATE")
+
+imbalance_diagnostics <- diagnose_design(
+  imbalances,
+  sims = 1000, 
+  bootstrap_sims = 100,
+  diagnosands = diagnosands
+)
+
+tidy(imbalance_diagnostics) %>% 
+  mutate(
+    Estimator = estimator,
+    estimate = paste(round(estimate, 3), jpw::brackets(round(std.error, 3))),
+    .keep = "unused"
+  ) %>% 
+  select(Estimator, diagnosand, estimate) %>% 
+  pivot_wider(
+    names_from = diagnosand,
+    values_from = estimate
+  ) %>% 
+  arrange(Estimator)
+
+power_sims <- function(ef_probs, assignment) {
+  
+  results <- list()
+  sim_set <- expand_grid(ass = assignment, probs = ef_probs)
+  
+  for (i in 1:nrow(sim_set)) {
+    base_design <- 
+      declare_model(
+        N = N,
+        prob = sim_set$probs[i],
+        handler = draw_data_with_effect
+      ) +
+      declare_inquiry(
+        SATE = mean(Y_Z_1 - Y_Z_0)
+      ) 
+    
+    design <- base_design + 
+      sim_set$ass[[i]] +
+      measurement +
+    declare_estimator(
+      handler = label_estimator(cond_on_imbalances), inquiry = "SATE",
+      label = "Imbalance Adjusted"
+    ) + 
+    declare_estimator(
+      handler = label_estimator(cond_on_imbalances_regression), inquiry = "SATE",
+      label = "Imbalance Adjusted - Regression"
+    ) +
+    declare_estimator(Y ~ Z, label = "Difference in means", inquiry = "SATE")
+    
+    diagnostics <- diagnose_design(
+      design,
+      sims = nsims, 
+      bootstrap_sims = nboot,
+      diagnosands = declare_diagnosands(
+        mean_estimand = mean(estimand),
+        power = mean(p.value <= 0.05))
+    )
+    results[[i]] <- diagnostics
+  }
+  
+  results
+}
+
+# Set parameters for simulations
+assignments <- c(
+  bernoulli = bernoulli_assignment
+)
+ef_probs <- c(.1, .25, .5, .75, 1)
+res <- power_sims(ef_probs, assignments)
+
+
+power_data <- tibble(
+  SATE = round(SATEs, 2),
+  power_sims = res %>% map(tidy)
+) %>% 
+  unnest(power_sims) %>% 
+  filter(diagnosand == "power") %>% 
+  arrange(SATE, estimator)
+
+power_data %>% 
+  ggplot(
+    aes(x = estimator, y = estimate, col = estimator)
+  ) +
+  geom_point(position = position_dodge(width = 0.5)) +
+  geom_errorbar(
+    aes(ymin = estimate - std.error, ymax = estimate + std.error), 
+    width = .4, position = position_dodge(width = 0.4)
+  ) +
+  facet_wrap(~SATE, ncol = 5) +
+  ggsci::scale_color_d3() +
+  labs(
+    title = "Power for different SATEs, estimators, and assignment mechanisms",
+    caption = "Error bars represent standard errors obtained via bootstrap.",
+    y = "Power",
+    x = "Assignment mechanism"
+  )
+
+
+
+```
+
+This analysis shows that there is likely benefit to adjusting for imbalances found in the data in your experiment, as there is no change in bias, but there is a reduction in the variance of the estimator, and in the mean CI width. However, there are some 
