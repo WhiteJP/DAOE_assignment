@@ -3,7 +3,7 @@ title: "DAOE Assignment"
 subtitle: "MIT Sloan School of Management"
 date: '15 November 2023'
 author: "Joshua White"
-execute:
+execute: 
   cache: true
 knitr:
   opts_chunk: 
@@ -30,19 +30,11 @@ format:
 suppressPackageStartupMessages({
   library(tidyverse)
   library(DeclareDesign)
-  library(quickblock)
+  library(quickblock) # for quickblock()
+  library(broom) # for tidy()
+  library(jpw) # personal package for simple utility funs 
 })
 
-ggplot2::theme_set(
-  ggplot2::theme_bw() +
-  theme(
-    plot.title = element_text(size=14),
-    axis.text.x = element_text(angle = 45, hjust = 1),
-    legend.title = element_text(size=8),
-    legend.text = element_text(size=6),
-    legend.position = "bottom"
-  ) 
-)
 ```
 
 #### Load data
@@ -53,10 +45,7 @@ Note, `educ_cat` loaded as ordered factor and `ideo` loaded as integer to work b
 data <- readr::read_csv(
   "mt_baseline_data.csv",
   col_types = cols(
-    educ_cat = col_factor(
-      levels = c("High school or less", "Some college", "College degree", "Post-graduate degree"),
-      ordered = TRUE
-    ),
+    educ_cat = col_factor(),
     ideo = col_integer(),
     income_cat = col_factor(),
     race = col_factor()
@@ -67,11 +56,11 @@ data <- readr::read_csv(
 #### Define functions
 
 ```{r}
-# Draw data function for use with DeclareDesign
+# draw_data function for use with DeclareDesign
 draw_data <- function(N) {
   draw <- as.data.frame(data[sample.int(nrow(data), N), ])
   Y_Z_1 <- Y_Z_0 <- Y <- draw$y # SHARP NULL -- No effect.
-  block <- unclass(quickblock(draw[, c("party", "ideo", "age", "educ_cat")], 8))
+  block <- unclass(quickblock::quickblock(draw[, c("party", "ideo", "age", "educ_cat")], 8))
   cbind(draw, block, Y_Z_1, Y_Z_0, Y)
 }
 
@@ -97,8 +86,8 @@ print_diagnostics <- function(tidy_diagnostics) {
 ```{r}
 N <- 1000
 trt <- 1/4
-nsims <- 2000
-nboot <- 1000
+nsims <- 1000
+nboot <- 200
 estimator_labs <-  c(
   "Difference in means", "Party-adjusted", "Party-adjusted, Lin (2013)",
   "Party-adjusted, as factor", "Covariate-adjusted"
@@ -223,24 +212,38 @@ comparison_data <-
 
 comparison_data %>% 
   ggplot(aes(y = estimate, x = design, col = estimator)) +
-  geom_point(position = position_dodge(width = 0.5)) +
+  geom_point(position = position_dodge(width = 0.6)) +
   geom_errorbar(
     aes(ymin = estimate - std.error, ymax =  estimate + std.error), width = .4,
-    position = position_dodge(width = 0.4)
+    position = position_dodge(width = 0.6)
   ) +
   facet_wrap(~diagnosand, ncol = 4, scales = "free") +
   ggsci::scale_color_d3() +
   labs(
     x = "Assignment mechanism",
     y = "",
-    title = "Comparing diagnosands for different estimators and assignment mechanisms",
+    title = "Comparing different estimators and assignment mechanisms",
     caption = "Error bars represent standard errors obtained via bootstrap."
-  )
+  ) +   
+  ggplot2::theme_bw() +
+  theme(
+    plot.title = element_text(size=14),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.title = element_text(size=8),
+    legend.text = element_text(size=6),
+    legend.position = "bottom"
+  ) 
+
 ```
 
 ### Discussion
 
-There appears to be some benefits to blocking on relevant variables, if in analysis we also account for the same variables. ... 
+This analysis shows that all estimators are unbiased for all assignment mechanisms. In relation to variance, however, there is benefits to conducting stratified randomization compared to Bernoulli randomization. In particular, it appears that randomization stratifying on multiple covariates results in the lowest variance. Within the randomization scheme, however, the analysis method does not generally have large effects on the variance.
+
+There are also clear differences between the assignment mechanisms and estimators in terms of mean confidence interval width. The general pattern here is that more complex estimators have smaller confidence interval widths, but that the results are similar with different assignment mechanisms. The exception here, is when combining the multiple-covariate-adjusted estimator with the multiple-covariate-stratified randomization. In this case, the combination results in a CI width much smaller than all other estimator/randomization method combinations. 
+
+Lastly, CI coverage for all analysis method/randomization combinations were unbiased unbiased (i.e., .95) with the exception of some analysis methods combined with multiple-covariate-stratified randomization. In this case, one should make sure to use the estimator adjusting for these same covariates, as the other estimators resulted in liberally biased CI coverage.  
+
 
 ## Question 1b
 
@@ -250,7 +253,7 @@ ef_probs <- c(.1, .25, .5, .75, 1)
 SATEs <- numeric(length(ef_probs))
 for (i in seq_along(ef_probs)) {
   y1 <- ifelse(data$y != 7, 
-    data$y + 1 * rbinom(4000, 1, prob = ef_probs[i]), 
+    data$y + 1 * rbinom(nrow(data), 1, prob = ef_probs[i]), 
     data$y
   )
   SATEs[i] <- mean(y1 - data$y)
@@ -262,9 +265,7 @@ SATEs_list <- jpw::brackets(paste(round(SATEs, 2), collapse = ", "), "squiggly")
 
 ```
 
-To see how the different assignment mechanisms and analysis choices may have a practical effect on the results of the experiment, I will run simulations to see how power changes under different effect sizes for each different assignment mechanism/analysis combination. Because the outcome variable must be an integer in the range [1, 7], we will consider various treatment effects in which participants in treatment have a probability $p \in$ {.1, .25, .5, .75, 1} of increasing the outcome `y` by 1 (if the subject has not already scored the maximum of 7). In our finite sample (the 4000 data points given), these correspond to average treatment effects of approximately `r SATEs_list`, and given `y`s standard deviation of `r sd(data$y)`standardized effect sizes (Cohen's d) of `r ds_list`. This allows
-
-Given the dataset, the maximum possible positive effect size of treatment would be approximately `r mean(7 - data$y)` if all treated subjects took on the maximum value. We will thus consider
+To see how the different assignment mechanisms and analysis choices may have a practical effect on the results of the experiment, I will run simulations to see how power changes under different effect sizes for each different assignment mechanism/analysis combination. Because the outcome variable must be an integer in the range [1, 7], we will consider various treatment effects in which participants in treatment have a probability $p \in$ {.1, .25, .5, .75, 1} of increasing the outcome `y` by 1 (if the subject has not already scored the maximum of 7). In our finite sample (the 4000 data points given), these correspond to average treatment effects of approximately `r SATEs_list`, and given `y`'s standard deviation of `r round(sd(data$y), 2)`, standardized effect sizes (Cohen's d) of `r ds_list`. 
 
 ### Setup
 
@@ -272,7 +273,7 @@ Given the dataset, the maximum possible positive effect size of treatment would 
 draw_data_with_effect <- function(N, prob) {
   draw <- as.data.frame(data[sample.int(nrow(data), N), ])
   Y_Z_0 <- Y <- draw$y 
-  Y_Z_1 <- ifelse(Y != 7, Y + 1 * rbinom(4000, 1, prob = prob), Y)
+  Y_Z_1 <- ifelse(Y != 7, Y + 1 * rbinom(N, 1, prob = prob), Y)
   block <- unclass(quickblock(draw[, c("party", "ideo", "age", "educ_cat")], 8))
   cbind(draw, block, Y_Z_1, Y_Z_0, Y)
 }
@@ -314,7 +315,6 @@ power_sims <- function(ef_probs, assignment) {
     )
     results[[i]] <- diagnostics
   }
-  
   results
 }
 
@@ -335,7 +335,7 @@ power_sims_results <- power_sims(ef_probs, assignments)
 
 power_data <- tibble(
   assignment = rep(design_labs, each = length(ef_probs)),
-  SATE = rep(round(SATEs, 2), times = 3),
+  SATE = rep(round(SATEs, 2), times = length(assignments)),
   power_sims = power_sims_results %>% map(tidy)
 ) %>% 
   unnest(power_sims) %>% 
@@ -355,27 +355,36 @@ power_data %>%
   ggplot(
     aes(x = assignment, y = estimate, col = estimator)
   ) +
-  geom_point(position = position_dodge(width = 0.5)) +
+  geom_point(position = position_dodge(width = 0.6)) +
   geom_errorbar(
     aes(ymin = estimate - std.error, ymax = estimate + std.error), 
-    width = .4, position = position_dodge(width = 0.4)
+    width = .4, position = position_dodge(width = 0.6)
   ) +
   facet_wrap(~SATE, ncol = 5) +
   ggsci::scale_color_d3() +
   labs(
     title = "Power for different SATEs, estimators, and assignment mechanisms",
-    caption = "Error bars represent standard errors obtained via bootstrap.",
+    caption = "Error bars represent standard errors obtained via bootstrap.
+      Panels show values for different SATEs.",
     y = "Power",
     x = "Assignment mechanism"
-  )
+  ) +   
+  ggplot2::theme_bw() +
+  theme(
+    plot.title = element_text(size=14),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.title = element_text(size=8),
+    legend.text = element_text(size=6),
+    legend.position = "bottom"
+  ) 
 
 
 ```
 
-### Table
+#### Table
 
 ```{r}
-#| tbl-cap: "Simulations results showing power (with alpha = .05) for different SATEs (columns) assignment mechanisms and estimators"
+#| tbl-cap: "Simulations results showing power (with alpha = .05) for different SATEs (columns), assignment mechanisms, and estimators"
 #| tbl-subcap: "Values in brackets are standard errors obtained by bootstrap"
 power_data %>% 
   mutate(
@@ -388,29 +397,40 @@ power_data %>%
   ) 
 ```
 
-#### Discussion
+### Discussion
 
-These results show that ...
+These results do not show an obvious pattern for different randomization schemes or analysis choice, particularly when looking across different effect sizes. For small effect sizes, Bernoulli randomization had better or equivalent power to the block-randomization methods, although for larger effect sizes (SATEs of 0.34 and 0.49) it had slightly lower power. When considering how blocked analyses interact with the different analysis methods, adjusting analyses on the same variables upon which randomization was blocked seemd to result in the greatest power. 
+
+Overall, this analysis shows that using blocked randomization and analyses may show small benefits to power, although this depends on the size of the underlying effect. In these cases, the most benefit can be gained if analysis is adjusted on the same variables that randomization is stratified by. 
 
 ## Bonus Question
 
-I will run two pipelines the following setup with each draw from the data: 
+To analyse the effect that conditioning analysis on "imbalances" in covariates between treatment groups in Bernoulli randomization, I will run both the above simulations (first, looking at Bias, SD, mean CI width and CI coverage under the sharp null, and second, looking at power for different effects). For each simulated draw of the data, I will:
 
-- run an OLS multiple linear regression with a main effect for each covariate. Where variables can be coerced to numeric (i.e., ordinal variables such as `educ_cat`, `ideo` and `party`) they will be done so. For `race` and `income_cat` which are truly categorical, I use treatment coding with "White" as the reference for `race` and "<50K" as the default for `income_cat`. If in
+1. run a separate t-test (or chi-square test where the variable is not numeric) comparing treatment and control group on each covariate available.
+2. adjust for all variables for which $p \leq 0.1$ from step 1 above, using `estimator::lm_robust()`.
 
-- run a separate t-test (for numerical variables, age, party, chi-square test 
+I will also calculate the simple difference in means estimator, for comparison puropses.
 
-Define functions
+### Setup
+
+First, define some new functions. 
 
 ```{r}
-# Draw data under sharp null, with no need to create blocks here (save compute). 
+## draw data functions without quickblock, not necessary, saves compute
 draw_data1 <- function(N) {
   draw <- as.data.frame(data[sample.int(nrow(data), N), ])
   Y_Z_1 <- Y_Z_0 <- Y <- draw$y # SHARP NULL -- No effect.
   cbind(draw, Y_Z_1, Y_Z_0, Y)
 }
+draw_data1_with_effect <- function(N, prob) {
+  draw <- as.data.frame(data[sample.int(nrow(data), N), ])
+  Y_Z_0 <- Y <- draw$y 
+  Y_Z_1 <- ifelse(Y != 7, Y + 1 * rbinom(N, 1, prob = prob), Y)
+  cbind(draw, Y_Z_1, Y_Z_0, Y)
+}
 
-# Condition on variables with imbalances that found from a t-test or chi-squared.
+# OLS Conditional estimates on vars with "imbalances"
 cond_on_imbalances <- function(data) {
   vars <- c("political_knowledge", "ideo", "party", "educ_cat", "income_cat", "age", "race")
   ps <- numeric(length(vars))
@@ -424,77 +444,20 @@ cond_on_imbalances <- function(data) {
       ps[i] <- chisq.test(table(y, data$Z))$p.value
     }
   }
-
-  # get results after adjustment
-  adjust_for_vars(data, vars[ps <= .1])
-}
-
-# Condition analysis on variables with imbalances found from multiple regression.
-cond_on_imbalances_regression <- function(data) {
-  #run regression to check for imbalances
-  lm_res <- estimatr::lm_robust(
-    Z ~ political_knowledge + ideo + party + as.numeric(educ_cat) + 
-    relevel(income_cat, ref = "<50K") + age + relevel(race, ref = "White"), 
-    data) %>%  broom::tidy()
   
-  #find sig terms
-  terms <- "political_knowledge|ideo|party|educ_cat|income_cat|age|race"
-  sig_terms <- lm_res$term[lm_res$p.value <= .1 & lm_res$term != "(Intercept)"]
-  terms_to_adjust <- str_extract(sig_terms, terms)
-  
-  # get results after adjustment
-  adjust_for_vars(data, terms_to_adjust)
-}
-
-
-# Helper fun, adjust estimate in OLS based on "imbalances
-adjust_for_vars <- function(data, terms_to_adjust) {
-  adj_form <- if(length(terms_to_adjust)) {
-    paste0("Y ~ Z + ", paste(terms_to_adjust, collapse = " + "))
+  # get results after OLS adjustment based on "imbalances"
+  terms_to_adjust_for <- vars[ps <= .1]
+  formula <- if(length(terms_to_adjust_for)) {
+    paste0("Y ~ Z + ", paste(terms_to_adjust_for, collapse = " + "))
   } else {
     "Y ~ Z"
   }
-  out <- broom::tidy(lm_robust(formula(adj_form), data))
+  out <- broom::tidy(lm_robust(formula(formula), data))
   out[out$term == "Z", ] # return estimate and conf intervals of Z
 }
 
-
-imbalances <- declare_model(N = N, handler = draw_data1) +
-  bernoulli_assignment +
-  declare_inquiry(SATE = mean(Y_Z_1 - Y_Z_0)) + 
-  measurement +
-  declare_estimator(
-    handler = label_estimator(cond_on_imbalances), inquiry = "SATE",
-    label = "Imbalance Adjusted"
-  ) + 
-  declare_estimator(
-    handler = label_estimator(cond_on_imbalances_regression), inquiry = "SATE",
-    label = "Imbalance Adjusted - Regression"
-  ) +
-  declare_estimator(Y ~ Z, label = "Difference in means", inquiry = "SATE")
-
-imbalance_diagnostics <- diagnose_design(
-  imbalances,
-  sims = 1000, 
-  bootstrap_sims = 100,
-  diagnosands = diagnosands
-)
-
-tidy(imbalance_diagnostics) %>% 
-  mutate(
-    Estimator = estimator,
-    estimate = paste(round(estimate, 3), jpw::brackets(round(std.error, 3))),
-    .keep = "unused"
-  ) %>% 
-  select(Estimator, diagnosand, estimate) %>% 
-  pivot_wider(
-    names_from = diagnosand,
-    values_from = estimate
-  ) %>% 
-  arrange(Estimator)
-
-power_sims <- function(ef_probs, assignment) {
-  
+#new power sims function to run power simulations with this enquiry
+power_sims1 <- function(ef_probs, assignment) {
   results <- list()
   sim_set <- expand_grid(ass = assignment, probs = ef_probs)
   
@@ -512,15 +475,11 @@ power_sims <- function(ef_probs, assignment) {
     design <- base_design + 
       sim_set$ass[[i]] +
       measurement +
-    declare_estimator(
-      handler = label_estimator(cond_on_imbalances), inquiry = "SATE",
-      label = "Imbalance Adjusted"
-    ) + 
-    declare_estimator(
-      handler = label_estimator(cond_on_imbalances_regression), inquiry = "SATE",
-      label = "Imbalance Adjusted - Regression"
-    ) +
-    declare_estimator(Y ~ Z, label = "Difference in means", inquiry = "SATE")
+      declare_estimator(
+        handler = label_estimator(cond_on_imbalances), inquiry = "SATE",
+        label = "Imbalance Adjusted"
+      )  +
+      declare_estimator(Y ~ Z, label = "Difference in means", inquiry = "SATE")
     
     diagnostics <- diagnose_design(
       design,
@@ -532,46 +491,105 @@ power_sims <- function(ef_probs, assignment) {
     )
     results[[i]] <- diagnostics
   }
-  
   results
 }
 
-# Set parameters for simulations
-assignments <- c(
-  bernoulli = bernoulli_assignment
+```
+
+### Bias, SD, CI width and CI coverage under sharp null
+
+```{r}
+#| tbl-cap: "Simulation results comparing adjusting for imbalances -v- simple difference in means"
+#| tbl-subcap: "Values in brackets are standard errors obtained by bootstrap"
+design_imbalance_adjustment <- declare_model(N = N, handler = draw_data1) +
+  bernoulli_assignment +
+  declare_inquiry(SATE = mean(Y_Z_1 - Y_Z_0)) + 
+  measurement +
+  declare_estimator(
+    handler = label_estimator(cond_on_imbalances), label = "Imbalance Adjusted", inquiry = "SATE"
+  ) +
+  declare_estimator(Y ~ Z, label = "Difference in means", inquiry = "SATE")
+
+imbalance_diagnostics <- diagnose_design(
+  design_imbalance_adjustment,
+  sims = nsims, 
+  bootstrap_sims = nboot,
+  diagnosands = diagnosands
 )
-ef_probs <- c(.1, .25, .5, .75, 1)
-res <- power_sims(ef_probs, assignments)
+
+tidy(imbalance_diagnostics) %>% 
+  mutate(
+    Estimator = estimator,
+    estimate = paste(round(estimate, 3), jpw::brackets(round(std.error, 3))),
+    .keep = "unused"
+  ) %>% 
+  select(Estimator, diagnosand, estimate) %>% 
+  pivot_wider(
+    names_from = diagnosand,
+    values_from = estimate
+  ) %>% 
+  arrange(Estimator)
 
 
-power_data <- tibble(
+```
+
+### Power for 'conditional-upon-imbalances' estimator for different effect sizes
+
+```{r}
+#| tbl-cap: "Simulations results showing power for different SATEs (columns), and estimators"
+#| tbl-subcap: "Values in brackets are standard errors obtained by bootstrap. Alpha = 0.05"
+
+power_sims_results1 <- power_sims1(ef_probs, c(bernoulli = bernoulli_assignment))
+power_data1 <- tibble(
   SATE = round(SATEs, 2),
-  power_sims = res %>% map(tidy)
+  power_sims = power_sims_results1 %>% map(tidy)
 ) %>% 
   unnest(power_sims) %>% 
   filter(diagnosand == "power") %>% 
   arrange(SATE, estimator)
 
-power_data %>% 
+# Table
+power_data1 %>% 
+  mutate(
+    estimate = paste(round(estimate, 3), jpw::brackets(round(std.error, 3)))
+  ) %>% 
+  select(SATE, estimator, estimate) %>% 
+  pivot_wider(
+    names_from = SATE,
+    values_from = estimate
+  ) 
+
+# Plot
+power_data1 %>% 
   ggplot(
     aes(x = estimator, y = estimate, col = estimator)
   ) +
-  geom_point(position = position_dodge(width = 0.5)) +
+  geom_point(position = position_dodge(width = 0.6)) +
   geom_errorbar(
     aes(ymin = estimate - std.error, ymax = estimate + std.error), 
-    width = .4, position = position_dodge(width = 0.4)
+    width = .4, position = position_dodge(width = 0.6)
   ) +
   facet_wrap(~SATE, ncol = 5) +
   ggsci::scale_color_d3() +
   labs(
-    title = "Power for different SATEs, estimators, and assignment mechanisms",
-    caption = "Error bars represent standard errors obtained via bootstrap.",
+    title = "Power for different SATEs, comparing imbalance-adjusting v diff in means",
+    caption = "Error bars represent standard errors obtained via bootstrap.
+      Panels show values for different SATEs.",
     y = "Power",
-    x = "Assignment mechanism"
+    x = ""
+  ) +
+  ggplot2::theme_bw() +
+  theme(
+    plot.title = element_text(size=14),
+    legend.title = element_text(size=8),
+    legend.text = element_text(size=10),
+    legend.position = "bottom",
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank()
   )
-
-
 
 ```
 
-This analysis shows that there is likely benefit to adjusting for imbalances found in the data in your experiment, as there is no change in bias, but there is a reduction in the variance of the estimator, and in the mean CI width. However, there are some 
+### Discussion
+
+This analysis shows that adjusting for covariate imbalances between treatment and control with an OLS estimator results in, for a null effect, improvements to estimator variance and confidence interval width, compared to the simple difference in means estimator. In addition, the estimator is unbiased and maintains CI coverage = $1 - \alpha$. When considering different sized underlying effects, there is also a non-trivial increase in power for the covariate-adjusted OLS estimator compared to the difference in means estimator (for effect sizes in which there isn't a floor or ceilling effect). However, this is not to say that such imbalance adjustments should necessarily be advised. According to Imbens and Rubens (2007)^[Athey, S., and Imbens, G. W. (2017), “The Econometrics of Randomized Experiments,” in Handbook of Economic Field Experiments, volume 1 of Handbook of Field Experiments, eds. A. V. Banerjee and E. Duflo, pp.73–140] “it is easy for the researcher using regression methods to go beyond analyses that are justified by randomization, and end up with analyses that rely on a difficult-to-assess mix of randomization assumptions, modeling assumptions, and large sample approximations.” Considerable caution should thus be taken before adopting such an approach. 
